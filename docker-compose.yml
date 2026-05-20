@@ -1,0 +1,107 @@
+version: "3.8"
+
+networks:
+  demo-net:
+
+volumes:
+  kafka_data:
+  spark_output:
+
+services:
+  # ---------- Kafka (KRaft combined mode, no ZooKeeper) ----------
+  kafka:
+    image: confluentinc/cp-kafka:7.7.0
+    container_name: kafka
+    networks: [demo-net]
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_NODE_ID: "1"
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LOG_DIRS: "/var/lib/kafka/data"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      CLUSTER_ID: "4L6g3nShT-eMCtK--X86sw"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+
+  # ---------- Kafka UI ----------
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    networks: [demo-net]
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: "local"
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: "kafka:9092"
+    depends_on:
+      - kafka
+
+  # ---------- Spark Master ----------
+  spark-master:
+    image: spark:3.5.1-python3
+    container_name: spark-master
+    networks: [demo-net]
+    hostname: spark-master
+    ports:
+      - "7077:7077"
+      - "8081:8080"
+    command: >
+      bash -lc "/opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+      --host spark-master --port 7077 --webui-port 8080"
+    depends_on:
+      - kafka
+
+  # ---------- Spark Worker ----------
+  spark-worker:
+    image: spark:3.5.1-python3
+    container_name: spark-worker
+    networks: [demo-net]
+    hostname: spark-worker
+    ports:
+      - "8082:8081"
+    environment:
+      - SPARK_WORKER_CORES=2
+      - SPARK_WORKER_MEMORY=2g
+    command: >
+      bash -lc "/opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker
+      spark://spark-master:7077 --webui-port 8081"
+    depends_on:
+      - spark-master
+
+  # ---------- Spark App (runs spark-submit once) ----------
+  spark-app:
+    image: spark:3.5.1-python3
+    container_name: spark-app
+    user: root
+    networks: [demo-net]
+    depends_on:
+      - spark-master
+      - spark-worker
+      - kafka
+    volumes:
+      - ./spark/app:/opt/spark-app
+      - spark_output:/opt/spark/output
+    command: >
+      bash -lc "
+      sleep 10 &&
+      /opt/spark/bin/spark-submit --master spark://spark-master:7077
+      --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.apache.kafka:kafka-clients:3.7.0
+      /opt/spark-app/stream_job.py
+      "
+
+  # ---------- Simple JSON Producer ----------
+  producer:
+    build: ./producer
+    container_name: producer
+    networks: [demo-net]
+    depends_on:
+      - kafka
+    environment:
+      - KAFKA_BOOTSTRAP=kafka:9092
+      - KAFKA_TOPIC=events
