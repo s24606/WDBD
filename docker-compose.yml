@@ -6,8 +6,51 @@ networks:
 volumes:
   kafka_data:
   spark_output:
+  postgres_data:
 
 services:
+  # ---------- PostgreSQL ----------
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    networks: [demo-net]
+    ports:
+      - "5432:5432"
+    command: >
+      postgres
+        -c wal_level=logical
+        -c max_replication_slots=5
+        -c max_wal_senders=5
+    environment:
+      POSTGRES_DB: hospital
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d hospital"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ---------- Ingestion (loads CSVs into PostgreSQL) ----------
+  ingestion:
+    build: ./app
+    container_name: ingestion
+    networks: [demo-net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./data:/data
+    environment:
+      - PGHOST=postgres
+      - PGPORT=5432
+      - PGDB=hospital
+      - PGUSER=postgres
+      - PGPASSWORD=postgres
+      - CSV_DIR=/data
+
   # ---------- Kafka (KRaft combined mode, no ZooKeeper) ----------
   kafka:
     image: confluentinc/cp-kafka:7.7.0
@@ -94,14 +137,3 @@ services:
       --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.apache.kafka:kafka-clients:3.7.0
       /opt/spark-app/stream_job.py
       "
-
-  # ---------- Simple JSON Producer ----------
-  producer:
-    build: ./producer
-    container_name: producer
-    networks: [demo-net]
-    depends_on:
-      - kafka
-    environment:
-      - KAFKA_BOOTSTRAP=kafka:9092
-      - KAFKA_TOPIC=events
