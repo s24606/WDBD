@@ -24,8 +24,8 @@ Build a mini data platform in Docker that simulates a hospital business process,
 ### Task 2 — Connecting Debezium to Capture Changes in PostgreSQL ✓
 ### Task 3 — Kafka Setup & Streaming Events in JSON Format ✓
 ### Task 4 — Integrating Spark with Kafka for Data Processing ✓
-### Task 5 — Storing Processed Data in MinIO using Delta Lake ← current
-### Task 6 — Automating Deployment & Ensuring Reliability
+### Task 5 — Storing Processed Data in MinIO using Delta Lake ✓
+### Task 6 — Automating Deployment & Ensuring Reliability ← current
 
 ---
 
@@ -411,3 +411,75 @@ docker compose down -v
 - [x] `docker-compose.yml` — Spark master, worker, app services present
 - [x] `spark/app/stream_job.py` — reads JSON messages from all 3 Kafka topics
 - [x] Transformations: age derivation (patients), status filter (appointments), abnormal filter (lab_results)
+
+---
+
+## Task 5 — Storing Processed Data in MinIO using Delta Lake ✓
+
+### What was added
+
+**MinIO** replaces the console sink — all three Spark streams now write Delta Lake files to an S3-compatible object store running inside Docker.
+
+#### docker-compose.yml additions
+
+| Service | Image | Purpose |
+|---|---|---|
+| `minio` | `minio/minio:latest` | S3-compatible object store, ports 9000 (API) + 9001 (console) |
+| `minio-init` | `minio/mc:latest` | Creates `hospital` bucket on first boot |
+
+`spark-app` extended:
+- depends on `minio-init` (bucket exists before streaming starts)
+- `--packages` extended with `io.delta:delta-spark_2.12:3.2.0`, `org.apache.hadoop:hadoop-aws:3.3.4`, `com.amazonaws:aws-java-sdk-bundle:1.12.262`
+
+#### spark/app/stream_job.py changes
+
+`build_spark()` now configures:
+- Delta Lake extensions (`DeltaSparkSessionExtension`, `DeltaCatalog`)
+- S3A / MinIO connector (endpoint, credentials, path-style access, `SimpleAWSCredentialsProvider`)
+
+All three `writeStream` sinks changed from `format("console")` → `format("delta")`:
+
+| Query | Output path | Checkpoint |
+|---|---|---|
+| `patients_adults` | `s3a://hospital/patients` | `s3a://hospital/checkpoints/patients` |
+| `appointments_completed` | `s3a://hospital/appointments` | `s3a://hospital/checkpoints/appointments` |
+| `lab_results_abnormal` | `s3a://hospital/lab_results` | `s3a://hospital/checkpoints/lab_results` |
+
+### Running Task 5
+
+```bash
+docker compose up --build postgres ingestion kafka schema-registry kafka-ui debezium debezium-init minio minio-init spark-master spark-worker spark-app
+```
+
+Wait ~60 s for the pipeline to complete one or two micro-batches, then verify:
+
+**Option A — MinIO console (browser)**
+Open `http://localhost:9001` → log in with `minioadmin / minioadmin` → browse `hospital/` bucket.
+Expected folders: `patients/`, `appointments/`, `lab_results/`, `checkpoints/`.
+Each data folder contains `.parquet` files + a `_delta_log/` directory with JSON transaction logs.
+
+**Option B — Spark logs**
+```bash
+docker logs -f spark-app
+```
+No `StreamingQueryException` errors; queries `patients_adults`, `appointments_completed`, `lab_results_abnormal` all show `numOutputRows` > 0 in the first batch.
+
+**Option C — MinIO CLI from host**
+```bash
+# install mc client first, or exec into minio-init container
+docker run --rm --network wdbd_demo-net minio/mc:latest \
+  sh -c "mc alias set local http://minio:9000 minioadmin minioadmin && mc ls -r local/hospital"
+```
+
+```bash
+# clean reset
+docker compose down -v
+```
+
+### Task 5 Deliverables Checklist ✓
+
+- [x] `docker-compose.yml` — `minio` service running on ports 9000/9001
+- [x] `docker-compose.yml` — `minio-init` creates `hospital` bucket automatically
+- [x] `spark/app/stream_job.py` — SparkSession configured for Delta Lake + S3A/MinIO
+- [x] All three streams write Delta format to `s3a://hospital/{table}`
+- [x] Checkpoints stored at `s3a://hospital/checkpoints/{table}` for fault tolerance

@@ -1,12 +1,17 @@
 """
 Spark Structured Streaming job — reads CDC events from Kafka,
 deserializes Debezium JSON payloads, applies hospital business rules,
-and writes filtered results to console.
+and writes filtered results to MinIO in Delta format.
 
 Business rules:
   patients     → filter age >= 18  (derive age from date_of_birth)
   appointments → filter status = 'completed'
   lab_results  → filter is_abnormal = true
+
+Output paths (Delta on MinIO):
+  s3a://hospital/patients/
+  s3a://hospital/appointments/
+  s3a://hospital/lab_results/
 """
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
@@ -19,6 +24,10 @@ from pyspark.sql.types import (
 )
 
 KAFKA_BOOTSTRAP = "kafka:9092"
+MINIO_ENDPOINT  = "http://minio:9000"
+MINIO_USER      = "minioadmin"
+MINIO_PASSWORD  = "minioadmin"
+BUCKET          = "s3a://hospital"
 
 # ── Debezium `after` field schemas ────────────────────────────────────────────
 # Debezium + PostgreSQL + JsonConverter serializes:
@@ -61,6 +70,28 @@ LAB_RESULT_SCHEMA = StructType([
 ])
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+def build_spark() -> SparkSession:
+    return (
+        SparkSession.builder
+        .appName("HospitalCDCStream")
+        # Delta Lake
+        .config("spark.sql.extensions",
+                "io.delta.sql.DeltaSparkSessionExtension")
+        .config("spark.sql.catalog.spark_catalog",
+                "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+        # MinIO / S3A
+        .config("spark.hadoop.fs.s3a.endpoint",          MINIO_ENDPOINT)
+        .config("spark.hadoop.fs.s3a.access.key",        MINIO_USER)
+        .config("spark.hadoop.fs.s3a.secret.key",        MINIO_PASSWORD)
+        .config("spark.hadoop.fs.s3a.path.style.access", "true")
+        .config("spark.hadoop.fs.s3a.impl",
+                "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config("spark.hadoop.fs.s3a.aws.credentials.provider",
+                "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
+        .getOrCreate()
+    )
+
 
 def read_topic(spark, topic: str):
     return (
@@ -120,46 +151,36 @@ def lab_results_stream(spark):
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    spark = (
-        SparkSession.builder
-        .appName("HospitalCDCStream")
-        .getOrCreate()
-    )
+    spark = build_spark()
     spark.sparkContext.setLogLevel("WARN")
 
     queries = [
         patients_stream(spark)
         .writeStream
         .queryName("patients_adults")
-        .format("console")
+        .format("delta")
         .outputMode("append")
-        .option("truncate", False)
-        .option("numRows", 20)
-        .option("checkpointLocation", "/opt/spark/output/checkpoints/patients")
+        .option("checkpointLocation", f"{BUCKET}/checkpoints/patients")
         .trigger(processingTime="15 seconds")
-        .start(),
+        .start(f"{BUCKET}/patients"),
 
         appointments_stream(spark)
         .writeStream
         .queryName("appointments_completed")
-        .format("console")
+        .format("delta")
         .outputMode("append")
-        .option("truncate", False)
-        .option("numRows", 20)
-        .option("checkpointLocation", "/opt/spark/output/checkpoints/appointments")
+        .option("checkpointLocation", f"{BUCKET}/checkpoints/appointments")
         .trigger(processingTime="15 seconds")
-        .start(),
+        .start(f"{BUCKET}/appointments"),
 
         lab_results_stream(spark)
         .writeStream
         .queryName("lab_results_abnormal")
-        .format("console")
+        .format("delta")
         .outputMode("append")
-        .option("truncate", False)
-        .option("numRows", 20)
-        .option("checkpointLocation", "/opt/spark/output/checkpoints/lab_results")
+        .option("checkpointLocation", f"{BUCKET}/checkpoints/lab_results")
         .trigger(processingTime="15 seconds")
-        .start(),
+        .start(f"{BUCKET}/lab_results"),
     ]
 
     spark.streams.awaitAnyTermination()
