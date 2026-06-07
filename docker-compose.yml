@@ -189,13 +189,13 @@ services:
     depends_on:
       - spark-master
       - spark-worker
-      - kafka
+      - debezium-init
     volumes:
       - ./spark/app:/opt/spark-app
       - spark_output:/opt/spark/output
     command: >
       bash -lc "
-      sleep 10 &&
+      sleep 20 &&
       /opt/spark/bin/spark-submit --master spark://spark-master:7077
       --packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1,org.apache.kafka:kafka-clients:3.7.0
       /opt/spark-app/stream_job.py

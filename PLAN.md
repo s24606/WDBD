@@ -23,8 +23,8 @@ Build a mini data platform in Docker that simulates a hospital business process,
 ### Task 1 — Simulating a Business Process with Python ✓
 ### Task 2 — Connecting Debezium to Capture Changes in PostgreSQL ✓
 ### Task 3 — Kafka Setup & Streaming Events in JSON Format ✓
-### Task 4 — Integrating Spark with Kafka for Data Processing ← current
-### Task 5 — Storing Processed Data in MinIO using Delta Lake
+### Task 4 — Integrating Spark with Kafka for Data Processing ✓
+### Task 5 — Storing Processed Data in MinIO using Delta Lake ← current
 ### Task 6 — Automating Deployment & Ensuring Reliability
 
 ---
@@ -106,6 +106,9 @@ WDBD/
 │   ├── patients.csv             # 100 rows (committed)
 │   ├── appointments.csv         # 500 rows (committed)
 │   └── lab_results.csv          # 200 rows (committed)
+├── spark/
+│   └── app/
+│       └── stream_job.py        # Task 4 — Spark structured streaming job
 ├── debezium/
 │   └── hospital-connector.json  # Debezium connector config (Task 2)
 ├── docs/
@@ -350,8 +353,61 @@ docker compose down -v
 - [x] JSON serialization configured via Debezium `JsonConverter`
 - [x] `app/consumer.py` — reads and decodes JSON messages from all 3 topics
 
-- [x] `debezium/hospital-connector.json` — connector config with JSON serialization
-- [x] `docker-compose.yml` updated with `debezium` + `debezium-init` services
-- [x] PostgreSQL logical replication enabled (`wal_level=logical`)
-- [x] Debezium configured for JSON format (`JsonConverter`, schemas disabled)
-- [x] Verified: 3 Kafka topics populated with JSON messages (`op: r` snapshot + `op: u` updates)
+---
+
+## Task 4 — Spark Structured Streaming
+
+### What was added
+
+**`spark/app/stream_job.py`** — three independent structured streams replacing the original stub:
+
+| Stream | Topic | Transformation | Filter |
+|---|---|---|---|
+| `patients_adults` | `hospital.public.patients` | derive `age` from `date_of_birth` (days-since-epoch) | `age >= 18` |
+| `appointments_completed` | `hospital.public.appointments` | — | `status = 'completed'` |
+| `lab_results_abnormal` | `hospital.public.lab_results` | — | `is_abnormal = true` |
+
+### Debezium JSON envelope
+
+Each Kafka message has the structure:
+```json
+{ "op": "r", "before": null, "after": { ...row... }, "source": {...} }
+```
+Spark extracts `$.after` with `get_json_object`, parses it with `from_json` against a defined schema, then applies the filter.
+
+### Date handling
+
+`date_of_birth` arrives as **days since epoch** (INT32) from Debezium's PostgreSQL connector. Conversion to age:
+```python
+dob = date_add(lit("1970-01-01").cast("date"), col("date_of_birth"))
+age = floor(datediff(current_date(), dob) / 365)
+```
+
+### docker-compose change
+
+`spark-app` now depends on `debezium-init` (topics populated before Spark starts) and sleeps 20s for Spark master to stabilise.
+
+### Running Task 4
+
+```bash
+docker compose up --build postgres ingestion kafka schema-registry kafka-ui debezium debezium-init spark-master spark-worker spark-app
+
+# follow Spark output
+docker logs -f spark-app
+```
+
+Expected output every 15 seconds — three console batches:
+- `patients_adults` — ~85 rows with computed `age` column
+- `appointments_completed` — completed appointments only
+- `lab_results_abnormal` — out-of-range results only
+
+```bash
+# clean reset
+docker compose down -v
+```
+
+### Task 4 Deliverables Checklist ✓
+
+- [x] `docker-compose.yml` — Spark master, worker, app services present
+- [x] `spark/app/stream_job.py` — reads JSON messages from all 3 Kafka topics
+- [x] Transformations: age derivation (patients), status filter (appointments), abnormal filter (lab_results)

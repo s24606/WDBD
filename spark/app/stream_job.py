@@ -1,76 +1,169 @@
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, from_json
-from pyspark.sql.types import (StructType, StructField, IntegerType,
-                               StringType, DoubleType, TimestampType)
+"""
+Spark Structured Streaming job — reads CDC events from Kafka,
+deserializes Debezium JSON payloads, applies hospital business rules,
+and writes filtered results to console.
 
-# 1) Create Spark session
-spark = (
-    SparkSession.builder
-        .appName("KafkaToSparkStreaming")
-        .getOrCreate()
+Business rules:
+  patients     → filter age >= 18  (derive age from date_of_birth)
+  appointments → filter status = 'completed'
+  lab_results  → filter is_abnormal = true
+"""
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import (
+    col, from_json, get_json_object,
+    floor, datediff, current_date, date_add, lit,
+)
+from pyspark.sql.types import (
+    StructType, StructField,
+    StringType, IntegerType, LongType, FloatType, BooleanType,
 )
 
-spark.sparkContext.setLogLevel("WARN")
+KAFKA_BOOTSTRAP = "kafka:9092"
 
-# 2) Define schema for the JSON inside Kafka "value"
-event_schema = StructType([
-    StructField("id", IntegerType(), True),
-    StructField("ts", StringType(), True),       # parse later or keep as string
-    StructField("type", StringType(), True),
-    StructField("amount", DoubleType(), True),
-    StructField("region", StringType(), True),
+# ── Debezium `after` field schemas ────────────────────────────────────────────
+# Debezium + PostgreSQL + JsonConverter serializes:
+#   DATE      → INT32  (days since 1970-01-01, can be negative)
+#   TIMESTAMP → INT64  (microseconds since epoch)
+
+PATIENT_SCHEMA = StructType([
+    StructField("patient_id",    IntegerType()),
+    StructField("first_name",    StringType()),
+    StructField("last_name",     StringType()),
+    StructField("date_of_birth", IntegerType()),
+    StructField("gender",        StringType()),
+    StructField("email",         StringType()),
+    StructField("phone",         StringType()),
+    StructField("registered_at", LongType()),
+    StructField("is_active",     BooleanType()),
 ])
 
-# 3) Read stream from Kafka
-df_raw = (
-    spark.readStream
+APPOINTMENT_SCHEMA = StructType([
+    StructField("appointment_id", IntegerType()),
+    StructField("patient_id",     IntegerType()),
+    StructField("doctor_name",    StringType()),
+    StructField("department",     StringType()),
+    StructField("scheduled_at",   LongType()),
+    StructField("status",         StringType()),
+    StructField("notes",          StringType()),
+])
+
+LAB_RESULT_SCHEMA = StructType([
+    StructField("result_id",      IntegerType()),
+    StructField("patient_id",     IntegerType()),
+    StructField("appointment_id", IntegerType()),
+    StructField("test_name",      StringType()),
+    StructField("result_value",   FloatType()),
+    StructField("unit",           StringType()),
+    StructField("reference_min",  FloatType()),
+    StructField("reference_max",  FloatType()),
+    StructField("is_abnormal",    BooleanType()),
+    StructField("recorded_at",    LongType()),
+])
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def read_topic(spark, topic: str):
+    return (
+        spark.readStream
         .format("kafka")
-        .option("kafka.bootstrap.servers", "kafka:9092")
-        .option("subscribe", "events")
+        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP)
+        .option("subscribe", topic)
         .option("startingOffsets", "earliest")
         .load()
-)
-
-# 4) Parse the Kafka "value" (bytes) as JSON to columns
-df_parsed = (
-    df_raw
-        .selectExpr("CAST(value AS STRING) AS json_str", "timestamp AS kafka_timestamp")
-        .select(
-            from_json(col("json_str"), event_schema).alias("e"),
-            col("kafka_timestamp")
-        )
-    .select(
-        col("e.id").alias("id"),
-        col("e.ts").alias("ts"),            # ISO string
-        col("e.type").alias("type"),
-        col("e.amount").alias("amount"),
-        col("e.region").alias("region"),
-        col("kafka_timestamp")
+        .selectExpr("CAST(value AS STRING) AS raw")
     )
-)
 
-# 5) Write to console (debug) and to parquet (data lake-ish)
-# Console sink (nice for learning)
-query_console = (
-    df_parsed.writeStream
+
+def parse_debezium(df, schema):
+    """Extract Debezium `after` payload; drop DELETE events (after = null)."""
+    return (
+        df
+        .withColumn("op",    get_json_object(col("raw"), "$.op"))
+        .withColumn("after", get_json_object(col("raw"), "$.after"))
+        .filter(col("after").isNotNull())
+        .withColumn("data",  from_json(col("after"), schema))
+        .select("op", "data.*")
+    )
+
+# ── per-table streams ─────────────────────────────────────────────────────────
+
+def patients_stream(spark):
+    df = parse_debezium(read_topic(spark, "hospital.public.patients"), PATIENT_SCHEMA)
+    epoch = lit("1970-01-01").cast("date")
+    dob   = date_add(epoch, col("date_of_birth"))
+    return (
+        df
+        .withColumn("age", floor(datediff(current_date(), dob) / 365))
+        .filter(col("age") >= 18)
+        .select("patient_id", "first_name", "last_name", "age", "gender", "is_active")
+    )
+
+
+def appointments_stream(spark):
+    df = parse_debezium(read_topic(spark, "hospital.public.appointments"), APPOINTMENT_SCHEMA)
+    return (
+        df
+        .filter(col("status") == "completed")
+        .select("appointment_id", "patient_id", "department", "doctor_name", "status")
+    )
+
+
+def lab_results_stream(spark):
+    df = parse_debezium(read_topic(spark, "hospital.public.lab_results"), LAB_RESULT_SCHEMA)
+    return (
+        df
+        .filter(col("is_abnormal") == True)
+        .select("result_id", "patient_id", "test_name", "result_value", "unit",
+                "reference_min", "reference_max")
+    )
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    spark = (
+        SparkSession.builder
+        .appName("HospitalCDCStream")
+        .getOrCreate()
+    )
+    spark.sparkContext.setLogLevel("WARN")
+
+    queries = [
+        patients_stream(spark)
+        .writeStream
+        .queryName("patients_adults")
         .format("console")
         .outputMode("append")
-        .option("truncate", "false")
-        .trigger(processingTime="5 seconds")
-        .start()
-)
+        .option("truncate", False)
+        .option("numRows", 20)
+        .option("checkpointLocation", "/opt/spark/output/checkpoints/patients")
+        .trigger(processingTime="15 seconds")
+        .start(),
 
-# Parquet sink with checkpointing
-query_parquet = (
-    df_parsed.writeStream
-        .format("parquet")
-        .option("path", "/opt/spark/output/parquet/events")
-        .option("checkpointLocation", "/opt/spark/output/checkpoints/events_to_parquet")
+        appointments_stream(spark)
+        .writeStream
+        .queryName("appointments_completed")
+        .format("console")
         .outputMode("append")
-        .trigger(processingTime="5 seconds")
-        .start()
-)
+        .option("truncate", False)
+        .option("numRows", 20)
+        .option("checkpointLocation", "/opt/spark/output/checkpoints/appointments")
+        .trigger(processingTime="15 seconds")
+        .start(),
 
-# 6) Wait for termination (until container is stopped)
-query_console.awaitTermination()
-query_parquet.awaitTermination()
+        lab_results_stream(spark)
+        .writeStream
+        .queryName("lab_results_abnormal")
+        .format("console")
+        .outputMode("append")
+        .option("truncate", False)
+        .option("numRows", 20)
+        .option("checkpointLocation", "/opt/spark/output/checkpoints/lab_results")
+        .trigger(processingTime="15 seconds")
+        .start(),
+    ]
+
+    spark.streams.awaitAnyTermination()
+
+
+if __name__ == "__main__":
+    main()
