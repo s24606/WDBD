@@ -22,8 +22,8 @@ Build a mini data platform in Docker that simulates a hospital business process,
 
 ### Task 1 — Simulating a Business Process with Python ✓
 ### Task 2 — Connecting Debezium to Capture Changes in PostgreSQL ✓
-### Task 3 — Kafka Setup & Streaming Events in JSON Format ← current
-### Task 4 — Integrating Spark with Kafka for Data Processing
+### Task 3 — Kafka Setup & Streaming Events in JSON Format ✓
+### Task 4 — Integrating Spark with Kafka for Data Processing ← current
 ### Task 5 — Storing Processed Data in MinIO using Delta Lake
 ### Task 6 — Automating Deployment & Ensuring Reliability
 
@@ -98,15 +98,16 @@ patients (100)
 WDBD/
 ├── app/
 │   ├── generate_csv.py          # one-off generator script (outputs to data/)
-│   ├── load_data.py             # main deliverable
+│   ├── load_data.py             # Task 1 — loads CSVs into PostgreSQL
+│   ├── consumer.py              # Task 3 — Kafka consumer
 │   ├── Dockerfile
-│   └── requirements.txt         # psycopg2-binary, pandas
+│   └── requirements.txt         # psycopg2-binary, pandas, kafka-python-ng
 ├── data/
 │   ├── patients.csv             # 100 rows (committed)
 │   ├── appointments.csv         # 500 rows (committed)
 │   └── lab_results.csv          # 200 rows (committed)
 ├── debezium/
-│   └── hospital-connector.json  # Debezium connector config
+│   └── hospital-connector.json  # Debezium connector config (Task 2)
 ├── docs/
 │   └── ProjectDescription.pdf
 ├── docker-compose.yml
@@ -290,6 +291,64 @@ docker compose down -v
 ```
 
 ### Task 2 Deliverables Checklist ✓
+
+---
+
+## Task 3 — Kafka & Schema Registry
+
+### What was added
+
+- **Schema Registry** (`confluentinc/cp-schema-registry:7.7.0`) — running on port `8085`, passive for now (plain JSON doesn't register schemas); will be used in Task 4+
+- **Kafka external listener** — added `EXTERNAL://localhost:9094` so host-side scripts can reach Kafka. Internal services still use `kafka:9092`
+- **`app/consumer.py`** — reads all 3 hospital topics from earliest offset, deserializes JSON, prints `op` type + key fields
+
+### Kafka listener split
+
+| Listener | Address | Used by |
+|---|---|---|
+| `PLAINTEXT` | `kafka:9092` | Debezium, Spark (inside Docker) |
+| `EXTERNAL` | `localhost:9094` | consumer.py, local tooling (host) |
+
+### Consumer output format
+
+```
+[patients       ] op=READ (snapshot)      | {'patient_id': 1, 'first_name': 'Danielle', ...}
+[appointments   ] op=UPDATE               | {'appointment_id': 10, 'status': 'completed', ...}
+```
+
+### Running Task 3
+
+```bash
+# start full stack
+docker compose up --build postgres ingestion kafka schema-registry kafka-ui debezium debezium-init
+
+# run consumer (separate terminal)
+python app/consumer.py
+
+# trigger manual UPDATE events to test CDC
+docker exec -it postgres psql -U postgres -d hospital
+```
+
+```sql
+UPDATE patients SET is_active = false WHERE patient_id IN (1, 2, 3);
+UPDATE appointments SET status = 'completed' WHERE appointment_id IN (10, 20, 30);
+UPDATE lab_results SET is_abnormal = NOT is_abnormal WHERE result_id IN (5, 15, 25);
+```
+
+```bash
+# verify Schema Registry is up
+curl http://localhost:8085/subjects
+
+# clean reset
+docker compose down -v
+```
+
+### Task 3 Deliverables Checklist ✓
+
+- [x] `docker-compose.yml` — Kafka cluster running (KRaft, dual listeners)
+- [x] `docker-compose.yml` — Schema Registry running on port `8085`
+- [x] JSON serialization configured via Debezium `JsonConverter`
+- [x] `app/consumer.py` — reads and decodes JSON messages from all 3 topics
 
 - [x] `debezium/hospital-connector.json` — connector config with JSON serialization
 - [x] `docker-compose.yml` updated with `debezium` + `debezium-init` services
