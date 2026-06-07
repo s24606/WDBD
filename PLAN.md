@@ -21,8 +21,8 @@ Build a mini data platform in Docker that simulates a hospital business process,
 ## Task Breakdown
 
 ### Task 1 — Simulating a Business Process with Python ✓
-### Task 2 — Connecting Debezium to Capture Changes in PostgreSQL ← current
-### Task 3 — Kafka Setup & Streaming Events in JSON Format
+### Task 2 — Connecting Debezium to Capture Changes in PostgreSQL ✓
+### Task 3 — Kafka Setup & Streaming Events in JSON Format ← current
 ### Task 4 — Integrating Spark with Kafka for Data Processing
 ### Task 5 — Storing Processed Data in MinIO using Delta Lake
 ### Task 6 — Automating Deployment & Ensuring Reliability
@@ -105,6 +105,8 @@ WDBD/
 │   ├── patients.csv             # 100 rows (committed)
 │   ├── appointments.csv         # 500 rows (committed)
 │   └── lab_results.csv          # 200 rows (committed)
+├── debezium/
+│   └── hospital-connector.json  # Debezium connector config
 ├── docs/
 │   └── ProjectDescription.pdf
 ├── docker-compose.yml
@@ -195,7 +197,7 @@ docker compose down -v
 
 ---
 
-### Task 1 Deliverables Checklist
+### Task 1 Deliverables Checklist ✓
 
 - [x] `app/generate_csv.py` — generates 3 CSV files
 - [x] `data/patients.csv` — 100 rows committed
@@ -205,3 +207,92 @@ docker compose down -v
 - [x] `app/Dockerfile`
 - [x] `app/requirements.txt`
 - [x] `docker-compose.yml` updated with `postgres` + `ingestion` services
+
+---
+
+## Task 2 — Debezium CDC
+
+### How it works
+
+Debezium runs as a Kafka Connect worker. On first start it takes a **snapshot** of the configured tables (sending all existing rows as `op: "r"` events), then streams all subsequent changes from PostgreSQL's WAL as `op: "u"` (update) or `op: "d"` (delete) events.
+
+### PostgreSQL prerequisites (set in Task 1)
+
+| Parameter | Value | Purpose |
+|---|---|---|
+| `wal_level` | `logical` | full row-level change data in WAL |
+| `max_replication_slots` | `5` | Debezium occupies one slot |
+| `max_wal_senders` | `5` | concurrent WAL streaming connections |
+
+### Connector config — `debezium/hospital-connector.json`
+
+| Key | Value |
+|---|---|
+| `plugin.name` | `pgoutput` (built into PostgreSQL 10+) |
+| `snapshot.mode` | `initial` — snapshot existing rows on first connect |
+| `table.include.list` | `public.patients, public.appointments, public.lab_results` |
+| `key/value.converter` | `JsonConverter` with schemas disabled |
+
+### Kafka topics created
+
+| Topic | Messages |
+|---|---|
+| `hospital.public.patients` | 100 |
+| `hospital.public.appointments` | 500 |
+| `hospital.public.lab_results` | 200 |
+
+### docker-compose.yml additions
+
+**debezium service** — Kafka Connect worker, waits for postgres (healthy) + kafka (started):
+```yaml
+debezium:
+  image: debezium/connect:2.6
+  ports: ["8083:8083"]
+  environment:
+    BOOTSTRAP_SERVERS: kafka:9092
+    KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+    VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+    KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+    VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+```
+
+**debezium-init service** — registers connector once debezium is healthy and ingestion has completed:
+```yaml
+debezium-init:
+  image: curlimages/curl:8.7.1
+  depends_on:
+    debezium: { condition: service_healthy }
+    ingestion: { condition: service_completed_successfully }
+  command: curl -X POST http://debezium:8083/connectors -d @/debezium/hospital-connector.json
+```
+
+### Running Task 2
+
+```bash
+docker compose up --build postgres ingestion kafka kafka-ui debezium debezium-init
+```
+
+Verify in Kafka UI at `localhost:8080` — three hospital topics populated with JSON messages.
+
+To generate UPDATE events after setup:
+```sql
+UPDATE patients SET is_active = false WHERE patient_id IN (1, 2, 3);
+UPDATE appointments SET status = 'completed' WHERE appointment_id IN (10, 20, 30);
+UPDATE lab_results SET is_abnormal = NOT is_abnormal WHERE result_id IN (5, 15, 25);
+```
+
+```bash
+# check connector status
+curl http://localhost:8083/connectors/hospital-connector/status
+
+# clean reset
+docker compose down -v
+```
+
+### Task 2 Deliverables Checklist ✓
+
+- [x] `debezium/hospital-connector.json` — connector config with JSON serialization
+- [x] `docker-compose.yml` updated with `debezium` + `debezium-init` services
+- [x] PostgreSQL logical replication enabled (`wal_level=logical`)
+- [x] Debezium configured for JSON format (`JsonConverter`, schemas disabled)
+- [x] Verified: 3 Kafka topics populated with JSON messages (`op: r` snapshot + `op: u` updates)

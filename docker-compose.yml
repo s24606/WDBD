@@ -51,6 +51,52 @@ services:
       - PGPASSWORD=postgres
       - CSV_DIR=/data
 
+  # ---------- Debezium (Kafka Connect + PostgreSQL connector) ----------
+  debezium:
+    image: debezium/connect:2.6
+    container_name: debezium
+    networks: [demo-net]
+    ports:
+      - "8083:8083"
+    depends_on:
+      kafka:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: debezium-hospital
+      CONFIG_STORAGE_TOPIC: debezium_connect_configs
+      OFFSET_STORAGE_TOPIC: debezium_connect_offsets
+      STATUS_STORAGE_TOPIC: debezium_connect_statuses
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8083/connectors || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ---------- Debezium Init (registers the connector once) ----------
+  debezium-init:
+    image: curlimages/curl:8.7.1
+    container_name: debezium-init
+    networks: [demo-net]
+    depends_on:
+      debezium:
+        condition: service_healthy
+      ingestion:
+        condition: service_completed_successfully
+    volumes:
+      - ./debezium:/debezium
+    command: >
+      sh -c "curl -sf -X POST http://debezium:8083/connectors
+      -H 'Content-Type: application/json'
+      -d @/debezium/hospital-connector.json"
+
   # ---------- Kafka (KRaft combined mode, no ZooKeeper) ----------
   kafka:
     image: confluentinc/cp-kafka:7.7.0
