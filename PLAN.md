@@ -25,7 +25,7 @@ Build a mini data platform in Docker that simulates a hospital business process,
 ### Task 3 — Kafka Setup & Streaming Events in JSON Format ✓
 ### Task 4 — Integrating Spark with Kafka for Data Processing ✓
 ### Task 5 — Storing Processed Data in MinIO using Delta Lake ✓
-### Task 6 — Automating Deployment & Ensuring Reliability ← current
+### Task 6 — Automating Deployment & Ensuring Reliability ← current (not started)
 
 ---
 
@@ -483,3 +483,152 @@ docker compose down -v
 - [x] `spark/app/stream_job.py` — SparkSession configured for Delta Lake + S3A/MinIO
 - [x] All three streams write Delta format to `s3a://hospital/{table}`
 - [x] Checkpoints stored at `s3a://hospital/checkpoints/{table}` for fault tolerance
+
+---
+
+## Task 6 — Automating Deployment & Ensuring Reliability
+
+### What to add
+
+Task 6 covers four areas identified from the project requirements and reference implementation comparison.
+
+---
+
+### A — Medallion storage layers in MinIO
+
+Current flat paths (`s3a://hospital/patients`) hold filtered/transformed data that is effectively Silver. Restructure to make the layers explicit:
+
+| Layer | Path | Content |
+|---|---|---|
+| Bronze | `s3a://hospital/bronze/{table}` | Raw Debezium CDC envelope as-is (op, before, after, source) — no filtering |
+| Silver | `s3a://hospital/silver/{table}` | Filtered/transformed output (current logic: adults only, completed, abnormal) |
+
+`stream_job.py` changes:
+- Add a second `writeStream` per topic that writes the raw `$.after` JSON to Bronze before applying the filter.
+- Move current filtered sinks to Silver paths.
+- Update checkpoint paths accordingly (`s3a://hospital/checkpoints/bronze/{table}` and `s3a://hospital/checkpoints/silver/{table}`).
+- Update `minio-init` bucket setup if needed.
+
+---
+
+### B — Docker Compose reliability
+
+Healthchecks and proper dependency ordering so services never race-start.
+
+| Service | Healthcheck command |
+|---|---|
+| `kafka` | `kafka-broker-api-versions --bootstrap-server localhost:9092` |
+| `spark-master` | `curl -f http://localhost:8080` |
+
+Dependency upgrades (`service_started` → `service_healthy`):
+
+| Service | Dependency |
+|---|---|
+| `debezium` | `kafka: service_healthy` |
+| `schema-registry` | `kafka: service_healthy` |
+| `kafka-ui` | `kafka: service_healthy` |
+| `spark-worker` | `spark-master: service_healthy` |
+| `spark-app` | `spark-master: service_healthy` |
+
+`restart: on-failure` added to all long-running services: `postgres`, `kafka`, `debezium`, `schema-registry`, `kafka-ui`, `minio`, `spark-master`, `spark-worker`, `spark-app`.
+
+One-shot init services (`ingestion`, `debezium-init`, `minio-init`) get no restart policy — they run once and exit.
+
+Remove `sleep 20` from spark-app startup command (replaced by healthcheck dependency).
+
+---
+
+### C — Standalone operations scripts
+
+
+Three Python scripts at repo root, runnable with `python <script>.py`:
+
+#### `deploy.py`
+One-command deployment with:
+- Docker / Docker Compose pre-flight checks (`subprocess` + `docker info`)
+- `docker compose up --build -d` via `subprocess`
+- Per-service readiness polling using `socket.connect` (postgres 5432, kafka 9092, minio 9000, debezium 8083, spark-master 8080)
+- Summary table of service URLs on success
+
+#### `health_check.py`
+Validates the running stack:
+- Container status via `docker compose ps` output parsed with `subprocess`
+- Port reachability for each service using `socket`
+- Postgres: `psycopg2` connection + row counts on all three tables
+- Kafka: topic list via `kafka-python-ng` confirms all three hospital topics exist
+- Debezium: connector status via `requests` GET to `/connectors/hospital-connector/status`
+- MinIO: bucket exists + at least one Parquet file present in Silver paths via `boto3`
+- PASS / FAIL output per check; non-zero `sys.exit` on any failure (CI/CD compatible)
+
+#### `cleanup.py`
+Safe teardown:
+- `input()` confirmation prompt before destructive steps
+- `docker compose down -v` via `subprocess`
+- Optional: remove built images (`docker compose down --rmi local`)
+
+---
+
+### D — Data pipeline validation script
+
+`app/validate_consistency.py` — runnable from host, validates end-to-end:
+
+```
+python app/validate_consistency.py            # full check
+python app/validate_consistency.py --database # DB only
+python app/validate_consistency.py --kafka    # Kafka only
+python app/validate_consistency.py --minio    # MinIO only
+```
+
+Checks:
+- **Database**: tables exist, row counts match expected (100 / 500 / 200), no unexpected NULLs in PKs
+- **Kafka**: topics `hospital.public.patients/appointments/lab_results` exist, each has > 0 messages, messages are valid JSON with `op` field
+- **MinIO**: Silver paths exist for all three tables, at least one `.parquet` file present in each, `_delta_log/` directory exists confirming Delta format
+
+---
+
+### E — Documentation
+
+#### `DEPLOYMENT_GUIDE.md`
+- Architecture overview (pipeline diagram)
+- Prerequisites
+- Step-by-step deployment with `deploy.py`
+- Service URLs and credentials table
+- Medallion layer explanation and how to query each layer
+- Troubleshooting (common failure modes and fixes)
+
+#### `QUICKSTART.md`
+- 30-second setup (`python deploy.py`)
+- Service URL cheat-sheet
+- How to verify data in MinIO
+- How to run the validation script
+
+---
+
+### Startup order (target)
+
+```
+postgres ──healthy──► ingestion ──completed──►┐
+                                              debezium-init ──completed──►┐
+kafka ──healthy──► debezium ──healthy──────────────────────────────────────┤
+                                                                           spark-app
+minio ──healthy──► minio-init ──completed──────────────────────────────────┤
+                                                                           │
+kafka ──healthy──► spark-master ──healthy──► spark-worker ─────────────────┘
+```
+
+---
+
+### Task 6 Deliverables Checklist
+
+- [ ] `docker-compose.yml` — healthchecks on `kafka` and `spark-master`
+- [ ] `docker-compose.yml` — all `service_started` races eliminated
+- [ ] `docker-compose.yml` — `restart: on-failure` on all long-running services
+- [ ] `docker-compose.yml` — `sleep 20` hack removed from spark-app
+- [ ] `spark/app/stream_job.py` — Bronze sink added (raw CDC envelope, all three topics)
+- [ ] `spark/app/stream_job.py` — Silver paths updated to `s3a://hospital/silver/{table}`
+- [ ] `deploy.py` — one-command deployment with health polling and summary
+- [ ] `health_check.py` — full stack validation with CI-compatible exit codes
+- [ ] `cleanup.py` — safe teardown with confirmation
+- [ ] `app/validate_consistency.py` — end-to-end pipeline validation (DB / Kafka / MinIO)
+- [ ] `DEPLOYMENT_GUIDE.md` — operations guide with troubleshooting
+- [ ] `QUICKSTART.md` — quick reference

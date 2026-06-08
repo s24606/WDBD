@@ -1,17 +1,13 @@
 """
 Spark Structured Streaming job — reads CDC events from Kafka,
-deserializes Debezium JSON payloads, applies hospital business rules,
-and writes filtered results to MinIO in Delta format.
+deserializes Debezium JSON payloads, and writes to MinIO in Delta format
+using a two-layer medallion architecture:
 
-Business rules:
-  patients     → filter age >= 18  (derive age from date_of_birth)
-  appointments → filter status = 'completed'
-  lab_results  → filter is_abnormal = true
-
-Output paths (Delta on MinIO):
-  s3a://hospital/patients/
-  s3a://hospital/appointments/
-  s3a://hospital/lab_results/
+  Bronze  s3a://hospital/bronze/{table}   all CDC rows, parsed, no filtering
+  Silver  s3a://hospital/silver/{table}   filtered by hospital business rules:
+    patients     → age >= 18  (derived from date_of_birth)
+    appointments → status = 'completed'
+    lab_results  → is_abnormal = true
 """
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
@@ -28,6 +24,8 @@ MINIO_ENDPOINT  = "http://minio:9000"
 MINIO_USER      = "minioadmin"
 MINIO_PASSWORD  = "minioadmin"
 BUCKET          = "s3a://hospital"
+BRONZE          = f"{BUCKET}/bronze"
+SILVER          = f"{BUCKET}/silver"
 
 # ── Debezium `after` field schemas ────────────────────────────────────────────
 # Debezium + PostgreSQL + JsonConverter serializes:
@@ -116,7 +114,20 @@ def parse_debezium(df, schema):
         .select("op", "data.*")
     )
 
-# ── per-table streams ─────────────────────────────────────────────────────────
+# ── Bronze streams (all CDC rows, no business-rule filter) ────────────────────
+
+def bronze_patients_stream(spark):
+    return parse_debezium(read_topic(spark, "hospital.public.patients"), PATIENT_SCHEMA)
+
+
+def bronze_appointments_stream(spark):
+    return parse_debezium(read_topic(spark, "hospital.public.appointments"), APPOINTMENT_SCHEMA)
+
+
+def bronze_lab_results_stream(spark):
+    return parse_debezium(read_topic(spark, "hospital.public.lab_results"), LAB_RESULT_SCHEMA)
+
+# ── Silver streams (filtered by hospital business rules) ──────────────────────
 
 def patients_stream(spark):
     df = parse_debezium(read_topic(spark, "hospital.public.patients"), PATIENT_SCHEMA)
@@ -155,32 +166,61 @@ def main():
     spark.sparkContext.setLogLevel("WARN")
 
     queries = [
+        # ── Bronze: all CDC rows, no filtering ───────────────────────────────
+        bronze_patients_stream(spark)
+        .writeStream
+        .queryName("bronze_patients")
+        .format("delta")
+        .outputMode("append")
+        .option("checkpointLocation", f"{BUCKET}/checkpoints/bronze/patients")
+        .trigger(processingTime="15 seconds")
+        .start(f"{BRONZE}/patients"),
+
+        bronze_appointments_stream(spark)
+        .writeStream
+        .queryName("bronze_appointments")
+        .format("delta")
+        .outputMode("append")
+        .option("checkpointLocation", f"{BUCKET}/checkpoints/bronze/appointments")
+        .trigger(processingTime="15 seconds")
+        .start(f"{BRONZE}/appointments"),
+
+        bronze_lab_results_stream(spark)
+        .writeStream
+        .queryName("bronze_lab_results")
+        .format("delta")
+        .outputMode("append")
+        .option("checkpointLocation", f"{BUCKET}/checkpoints/bronze/lab_results")
+        .trigger(processingTime="15 seconds")
+        .start(f"{BRONZE}/lab_results"),
+
+        # ── Silver: business-rule filtered ───────────────────────────────────
         patients_stream(spark)
         .writeStream
         .queryName("patients_adults")
         .format("delta")
         .outputMode("append")
-        .option("checkpointLocation", f"{BUCKET}/checkpoints/patients")
+        .option("checkpointLocation", f"{BUCKET}/checkpoints/silver/patients")
         .trigger(processingTime="15 seconds")
-        .start(f"{BUCKET}/patients"),
+        .start(f"{SILVER}/patients"),
 
         appointments_stream(spark)
         .writeStream
         .queryName("appointments_completed")
         .format("delta")
         .outputMode("append")
-        .option("checkpointLocation", f"{BUCKET}/checkpoints/appointments")
+        .option("checkpointLocation", f"{BUCKET}/checkpoints/silver/appointments")
         .trigger(processingTime="15 seconds")
-        .start(f"{BUCKET}/appointments"),
+        .start(f"{SILVER}/appointments"),
 
         lab_results_stream(spark)
         .writeStream
         .queryName("lab_results_abnormal")
         .format("delta")
         .outputMode("append")
-        .option("checkpointLocation", f"{BUCKET}/checkpoints/lab_results")
+        .option("checkpointLocation", f"{BUCKET}/checkpoints/silver/lab_results")
         .trigger(processingTime="15 seconds")
-        .start(f"{BUCKET}/lab_results"),
+        .start(f"{SILVER}/lab_results"),
     ]
 
     spark.streams.awaitAnyTermination()
