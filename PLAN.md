@@ -620,15 +620,16 @@ kafka ──healthy──► spark-master ──healthy──► spark-worker �
 
 ### Task 6 Deliverables Checklist
 
-- [ ] `docker-compose.yml` — healthchecks on `kafka` and `spark-master`
-- [ ] `docker-compose.yml` — all `service_started` races eliminated
-- [ ] `docker-compose.yml` — `restart: on-failure` on all long-running services
-- [ ] `docker-compose.yml` — `sleep 20` hack removed from spark-app
-- [ ] `spark/app/stream_job.py` — Bronze sink added (raw CDC envelope, all three topics)
-- [ ] `spark/app/stream_job.py` — Silver paths updated to `s3a://hospital/silver/{table}`
-- [ ] `deploy.py` — one-command deployment with health polling and summary
-- [ ] `health_check.py` — full stack validation with CI-compatible exit codes
-- [ ] `cleanup.py` — safe teardown with confirmation
+- [x] `docker-compose.yml` — healthchecks on `kafka` and `spark-master`
+- [x] `docker-compose.yml` — all `service_started` races eliminated
+- [x] `docker-compose.yml` — `restart: on-failure` on all long-running services
+- [x] `docker-compose.yml` — `sleep 20` hack removed from spark-app
+- [x] `spark/app/stream_job.py` — Bronze sink added (raw CDC envelope, all three topics)
+- [x] `spark/app/stream_job.py` — Silver paths updated to `s3a://hospital/silver/{table}`
+- [x] `scripts/deploy.py` — one-command deployment with health polling and summary
+- [x] `scripts/health_check.py` — full stack validation with CI-compatible exit codes
+- [x] `scripts/cleanup.py` — safe teardown with confirmation
+- [x] `scripts/requirements.txt` — host-side dependencies for ops scripts
 - [ ] `app/validate_consistency.py` — end-to-end pipeline validation (DB / Kafka / MinIO)
 - [ ] `DEPLOYMENT_GUIDE.md` — operations guide with troubleshooting
 - [ ] `QUICKSTART.md` — quick reference

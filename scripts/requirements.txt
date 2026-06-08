@@ -1,0 +1,5 @@
+psycopg2-binary>=2.9.9
+kafka-python-ng==2.2.3
+requests==2.32.3
+boto3==1.35.36
+pyarrow>=17.0.0
