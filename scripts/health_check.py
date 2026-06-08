@@ -2,7 +2,7 @@
 Full stack health validation for the Hospital Data Platform.
 Exit code 0 = all checks passed (CI/CD compatible).
 
-Requires (pip install):  psycopg2-binary  kafka-python-ng  requests  boto3
+Requires: pip install -r scripts/requirements.txt
 """
 import json
 import socket
@@ -92,6 +92,28 @@ def check_kafka():
     return result(True, "all 3 hospital topics present")
 
 
+def check_schema_registry():
+    try:
+        import requests
+    except ImportError:
+        return result(False, "requests not installed — pip install requests")
+    r = requests.get("http://localhost:8085/subjects", timeout=5)
+    r.raise_for_status()
+    subjects = r.json()
+    return result(True, f"{len(subjects)} subject(s) registered")
+
+
+def check_minio_liveness():
+    try:
+        import requests
+    except ImportError:
+        return result(False, "requests not installed — pip install requests")
+    r = requests.get("http://localhost:9000/minio/health/live", timeout=5)
+    if r.status_code == 200:
+        return result(True, "liveness endpoint OK")
+    return result(False, f"liveness returned HTTP {r.status_code}")
+
+
 def check_debezium():
     try:
         import requests
@@ -159,16 +181,20 @@ def main():
     print("=== Hospital Platform Health Check ===\n")
 
     checks = [
-        ("Containers",          check_containers,                       ),
-        ("postgres:5432",       check_port, "postgres", "localhost", 5432),
-        ("kafka:9092",          check_port, "kafka",    "localhost", 9092),
-        ("minio:9000",          check_port, "minio",    "localhost", 9000),
-        ("debezium:8083",       check_port, "debezium", "localhost", 8083),
-        ("spark-master:8081",   check_port, "spark-master", "localhost", 8081),
-        ("PostgreSQL row counts", check_postgres,                       ),
-        ("Kafka topics",        check_kafka,                            ),
-        ("Debezium connector",  check_debezium,                         ),
-        ("MinIO silver layer",  check_minio,                            ),
+        ("Containers",             check_containers,                            ),
+        ("postgres:5432",          check_port, "postgres",        "localhost", 5432),
+        ("kafka:9092",             check_port, "kafka",           "localhost", 9092),
+        ("minio:9000",             check_port, "minio API",       "localhost", 9000),
+        ("minio:9001",             check_port, "minio console",   "localhost", 9001),
+        ("debezium:8083",          check_port, "debezium",        "localhost", 8083),
+        ("schema-registry:8085",   check_port, "schema-registry", "localhost", 8085),
+        ("spark-master:8081",      check_port, "spark-master",    "localhost", 8081),
+        ("PostgreSQL row counts",  check_postgres,                              ),
+        ("Kafka topics",           check_kafka,                                 ),
+        ("Schema Registry",        check_schema_registry,                       ),
+        ("Debezium connector",     check_debezium,                              ),
+        ("MinIO liveness",         check_minio_liveness,                        ),
+        ("MinIO silver layer",     check_minio,                                 ),
     ]
 
     results = []

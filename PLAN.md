@@ -541,26 +541,28 @@ Remove `sleep 20` from spark-app startup command (replaced by healthcheck depend
 ### C — Standalone operations scripts
 
 
-Three Python scripts at repo root, runnable with `python <script>.py`:
+Three Python scripts in `scripts/`, runnable with `python scripts/<script>.py`:
+Dependencies: `pip install -r scripts/requirements.txt`
 
-#### `deploy.py`
+#### `scripts/deploy.py`
 One-command deployment with:
 - Docker / Docker Compose pre-flight checks (`subprocess` + `docker info`)
 - `docker compose up --build -d` via `subprocess`
-- Per-service readiness polling using `socket.connect` (postgres 5432, kafka 9092, minio 9000, debezium 8083, spark-master 8080)
+- Per-service readiness polling using `socket.connect` (postgres 5432, kafka 9092, minio 9000, debezium 8083, spark-master 8081)
 - Summary table of service URLs on success
 
-#### `health_check.py`
-Validates the running stack:
+#### `scripts/health_check.py`
+Validates the running stack (14 checks):
 - Container status via `docker compose ps` output parsed with `subprocess`
-- Port reachability for each service using `socket`
+- Port reachability: postgres 5432, kafka 9092, minio 9000/9001, debezium 8083, schema-registry 8085, spark-master 8081
 - Postgres: `psycopg2` connection + row counts on all three tables
 - Kafka: topic list via `kafka-python-ng` confirms all three hospital topics exist
+- Schema Registry: `/subjects` endpoint reachable
 - Debezium: connector status via `requests` GET to `/connectors/hospital-connector/status`
-- MinIO: bucket exists + at least one Parquet file present in Silver paths via `boto3`
+- MinIO: liveness endpoint + Silver layer row counts per table via `boto3` + `pyarrow`
 - PASS / FAIL output per check; non-zero `sys.exit` on any failure (CI/CD compatible)
 
-#### `cleanup.py`
+#### `scripts/cleanup.py`
 Safe teardown:
 - `input()` confirmation prompt before destructive steps
 - `docker compose down -v` via `subprocess`
@@ -630,6 +632,6 @@ kafka ──healthy──► spark-master ──healthy──► spark-worker �
 - [x] `scripts/health_check.py` — full stack validation with CI-compatible exit codes
 - [x] `scripts/cleanup.py` — safe teardown with confirmation
 - [x] `scripts/requirements.txt` — host-side dependencies for ops scripts
-- [ ] `app/validate_consistency.py` — end-to-end pipeline validation (DB / Kafka / MinIO)
+- [x] `app/validate_consistency.py` — end-to-end pipeline validation (DB / Kafka / MinIO)
 - [ ] `DEPLOYMENT_GUIDE.md` — operations guide with troubleshooting
 - [ ] `QUICKSTART.md` — quick reference
