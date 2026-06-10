@@ -26,6 +26,7 @@ WDBD/
 ├── app/
 │   ├── load_data.py              # loads CSVs into PostgreSQL, simulates CDC events
 │   ├── generate_csv.py           # generates synthetic hospital CSVs
+│   ├── postgresql_insert.py      # inserts a single row into a chosen table (manual CDC trigger)
 │   ├── consumer.py               # Kafka consumer for reading CDC topics
 │   ├── validate_consistency.py   # end-to-end pipeline validation
 │   ├── Dockerfile

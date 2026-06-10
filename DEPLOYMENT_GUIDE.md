@@ -94,6 +94,17 @@ docker exec -it postgres psql -U postgres -d hospital -c "SELECT 'patients' AS t
 
 Expected: 100 / 500 / 200 rows.
 
+To inject an additional row and immediately trigger a CDC event:
+
+```bash
+python app/postgresql_insert.py --patient      # new patient
+python app/postgresql_insert.py --appointment  # new appointment (random existing patient)
+python app/postgresql_insert.py --lab_result   # new lab result (random existing appointment)
+python app/postgresql_insert.py               # random table
+```
+
+Each call prints the inserted values and produces one `op: "c"` message on the corresponding Kafka topic.
+
 ### 4. Kafka topics
 
 Open Kafka UI at http://localhost:8080 — three topics should be present:

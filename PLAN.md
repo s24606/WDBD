@@ -99,6 +99,7 @@ WDBD/
 ├── app/
 │   ├── generate_csv.py           # one-off generator script (outputs to data/)
 │   ├── load_data.py              # Task 1 — loads CSVs into PostgreSQL
+│   ├── postgresql_insert.py      # Task 1 — inserts a single row into a chosen table
 │   ├── consumer.py               # Task 3 — Kafka consumer
 │   ├── validate_consistency.py   # Task 6 — end-to-end pipeline validation
 │   ├── Dockerfile
@@ -131,6 +132,23 @@ WDBD/
 ├── IMPLEMENTATION_SUMMARY.md
 └── PLAN.md
 ```
+
+---
+
+### postgresql_insert.py — Manual Row Injection
+
+A companion script for ad-hoc testing. Inserts a single row with randomly generated data into one of the three hospital tables and immediately triggers a CDC event visible in Debezium/Kafka.
+
+```bash
+python app/postgresql_insert.py               # random table
+python app/postgresql_insert.py --patient
+python app/postgresql_insert.py --appointment
+python app/postgresql_insert.py --lab_result
+```
+
+- Computes the next PK via `SELECT MAX(pk) + 1` — no collision with bulk-loaded rows
+- Respects FK constraints: `appointments` picks a random existing `patient_id`; `lab_results` picks a random existing `(patient_id, appointment_id)` pair
+- Uses the same env vars as `load_data.py` (`PGHOST`, `PGPORT`, `PGDB`, `PGUSER`, `PGPASSWORD`)
 
 ---
 
@@ -223,6 +241,7 @@ docker compose down -v
 - [x] `data/appointments.csv` — 500 rows committed
 - [x] `data/lab_results.csv` — 200 rows committed
 - [x] `app/load_data.py` — reads CSVs, creates tables dynamically, inserts + CDC updates
+- [x] `app/postgresql_insert.py` — single-row insert utility, respects FK constraints, triggers CDC
 - [x] `app/Dockerfile`
 - [x] `app/requirements.txt`
 - [x] `docker-compose.yml` updated with `postgres` + `ingestion` services
@@ -293,7 +312,14 @@ docker compose up --build postgres ingestion kafka kafka-ui debezium debezium-in
 
 Verify in Kafka UI at `localhost:8080` — three hospital topics populated with JSON messages.
 
-To generate UPDATE events after setup:
+To generate new INSERT events after setup:
+```bash
+python app/postgresql_insert.py --patient
+python app/postgresql_insert.py --appointment
+python app/postgresql_insert.py --lab_result
+```
+
+Or trigger UPDATE events directly in PostgreSQL:
 ```sql
 UPDATE patients SET is_active = false WHERE patient_id IN (1, 2, 3);
 UPDATE appointments SET status = 'completed' WHERE appointment_id IN (10, 20, 30);
@@ -343,7 +369,11 @@ docker compose up --build postgres ingestion kafka schema-registry kafka-ui debe
 # run consumer (separate terminal)
 python app/consumer.py
 
-# trigger manual UPDATE events to test CDC
+# inject new rows to trigger CDC INSERT events
+python app/postgresql_insert.py --patient
+python app/postgresql_insert.py --appointment
+
+# or trigger UPDATE events directly
 docker exec -it postgres psql -U postgres -d hospital
 ```
 

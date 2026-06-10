@@ -161,6 +161,14 @@ def lab_results_stream(spark):
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
+def write_if_nonempty(path):
+    """foreachBatch writer that skips the commit when the micro-batch is empty."""
+    def _write(batch_df, _batch_id):
+        if not batch_df.isEmpty():
+            batch_df.write.format("delta").mode("append").save(path)
+    return _write
+
+
 def main():
     spark = build_spark()
     spark.sparkContext.setLogLevel("WARN")
@@ -170,57 +178,51 @@ def main():
         bronze_patients_stream(spark)
         .writeStream
         .queryName("bronze_patients")
-        .format("delta")
-        .outputMode("append")
         .option("checkpointLocation", f"{BUCKET}/checkpoints/bronze/patients")
         .trigger(processingTime="15 seconds")
-        .start(f"{BRONZE}/patients"),
+        .foreachBatch(write_if_nonempty(f"{BRONZE}/patients"))
+        .start(),
 
         bronze_appointments_stream(spark)
         .writeStream
         .queryName("bronze_appointments")
-        .format("delta")
-        .outputMode("append")
         .option("checkpointLocation", f"{BUCKET}/checkpoints/bronze/appointments")
         .trigger(processingTime="15 seconds")
-        .start(f"{BRONZE}/appointments"),
+        .foreachBatch(write_if_nonempty(f"{BRONZE}/appointments"))
+        .start(),
 
         bronze_lab_results_stream(spark)
         .writeStream
         .queryName("bronze_lab_results")
-        .format("delta")
-        .outputMode("append")
         .option("checkpointLocation", f"{BUCKET}/checkpoints/bronze/lab_results")
         .trigger(processingTime="15 seconds")
-        .start(f"{BRONZE}/lab_results"),
+        .foreachBatch(write_if_nonempty(f"{BRONZE}/lab_results"))
+        .start(),
 
         # ── Silver: business-rule filtered ───────────────────────────────────
         patients_stream(spark)
         .writeStream
         .queryName("patients_adults")
-        .format("delta")
-        .outputMode("append")
         .option("checkpointLocation", f"{BUCKET}/checkpoints/silver/patients")
         .trigger(processingTime="15 seconds")
-        .start(f"{SILVER}/patients"),
+        .foreachBatch(write_if_nonempty(f"{SILVER}/patients"))
+        .start(),
 
         appointments_stream(spark)
         .writeStream
         .queryName("appointments_completed")
-        .format("delta")
-        .outputMode("append")
         .option("checkpointLocation", f"{BUCKET}/checkpoints/silver/appointments")
         .trigger(processingTime="15 seconds")
-        .start(f"{SILVER}/appointments"),
+        .foreachBatch(write_if_nonempty(f"{SILVER}/appointments"))
+        .start(),
 
         lab_results_stream(spark)
         .writeStream
         .queryName("lab_results_abnormal")
-        .format("delta")
-        .outputMode("append")
         .option("checkpointLocation", f"{BUCKET}/checkpoints/silver/lab_results")
         .trigger(processingTime="15 seconds")
-        .start(f"{SILVER}/lab_results"),
+        .foreachBatch(write_if_nonempty(f"{SILVER}/lab_results"))
+        .start(),
     ]
 
     spark.streams.awaitAnyTermination()

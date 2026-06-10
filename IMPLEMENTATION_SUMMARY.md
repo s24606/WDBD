@@ -42,6 +42,14 @@ Three tables loaded from CSV:
   - 10 lab_results: `is_abnormal` toggled
   - 5 patients: `is_active` set to `false`
 
+**File:** `app/postgresql_insert.py`
+
+- Inserts a single randomly generated row into one of the three hospital tables
+- Target table selected via CLI flag (`--patient`, `--appointment`, `--lab_result`) or chosen at random
+- PK computed as `MAX(pk) + 1` — collision-safe with bulk-loaded data
+- Respects FK constraints by querying existing IDs before inserting
+- Each call produces one CDC `INSERT` event (`op: "c"`) visible in Kafka and downstream MinIO layers
+
 **File:** `app/generate_csv.py`
 
 - Generates deterministic synthetic data (`random.seed(42)`) using faker
@@ -216,6 +224,7 @@ End-to-end pipeline check with `--database`, `--kafka`, `--minio` flags:
 |---|---|---|
 | `app/generate_csv.py` | 1 | Synthetic hospital CSV generator |
 | `app/load_data.py` | 1 | CSV → PostgreSQL ingestion + CDC simulation |
+| `app/postgresql_insert.py` | 1 | Single-row insert utility — manual CDC trigger |
 | `app/Dockerfile` | 1 | Container image for ingestion service |
 | `app/requirements.txt` | 1 | psycopg2-binary, pandas, kafka-python-ng |
 | `app/consumer.py` | 3 | Kafka consumer for all 3 CDC topics |
