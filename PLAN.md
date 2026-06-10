@@ -25,7 +25,7 @@ Build a mini data platform in Docker that simulates a hospital business process,
 ### Task 3 — Kafka Setup & Streaming Events in JSON Format ✓
 ### Task 4 — Integrating Spark with Kafka for Data Processing ✓
 ### Task 5 — Storing Processed Data in MinIO using Delta Lake ✓
-### Task 6 — Automating Deployment & Ensuring Reliability ← current (not started)
+### Task 6 — Automating Deployment & Ensuring Reliability ✓
 
 ---
 
@@ -97,23 +97,38 @@ patients (100)
 ```
 WDBD/
 ├── app/
-│   ├── generate_csv.py          # one-off generator script (outputs to data/)
-│   ├── load_data.py             # Task 1 — loads CSVs into PostgreSQL
-│   ├── consumer.py              # Task 3 — Kafka consumer
+│   ├── generate_csv.py           # one-off generator script (outputs to data/)
+│   ├── load_data.py              # Task 1 — loads CSVs into PostgreSQL
+│   ├── consumer.py               # Task 3 — Kafka consumer
+│   ├── validate_consistency.py   # Task 6 — end-to-end pipeline validation
 │   ├── Dockerfile
-│   └── requirements.txt         # psycopg2-binary, pandas, kafka-python-ng
+│   └── requirements.txt          # psycopg2-binary, pandas, kafka-python-ng
 ├── data/
-│   ├── patients.csv             # 100 rows (committed)
-│   ├── appointments.csv         # 500 rows (committed)
-│   └── lab_results.csv          # 200 rows (committed)
+│   ├── patients.csv              # 100 rows (committed)
+│   ├── appointments.csv          # 500 rows (committed)
+│   └── lab_results.csv           # 200 rows (committed)
 ├── spark/
 │   └── app/
-│       └── stream_job.py        # Task 4 — Spark structured streaming job
+│       └── stream_job.py         # Tasks 4/5 — Spark structured streaming job
 ├── debezium/
-│   └── hospital-connector.json  # Debezium connector config (Task 2)
+│   └── hospital-connector.json   # Debezium connector config (Task 2)
+├── scripts/
+│   ├── deploy.py                 # Task 6 — one-command deployment
+│   ├── health_check.py           # Task 6 — 14-point stack validation
+│   ├── cleanup.py                # Task 6 — safe teardown
+│   └── requirements.txt          # host-side ops dependencies
 ├── docs/
-│   └── ProjectDescription.pdf
+│   ├── ProjectDescription.pdf
+│   ├── 0_Architecture.pptx
+│   ├── 1_KafkaTutorial.pdf
+│   ├── 2_kafka_spark_tutorial.pdf
+│   ├── 3_DebeziumTutorial.pdf
+│   └── 4_spark_starschema_eng.pdf
 ├── docker-compose.yml
+├── README.md
+├── QUICKSTART.md
+├── DEPLOYMENT_GUIDE.md
+├── IMPLEMENTATION_SUMMARY.md
 └── PLAN.md
 ```
 
@@ -628,6 +643,21 @@ kafka ──healthy──► spark-master ──healthy──► spark-worker �
 
 ---
 
+### Verifying Task 6
+
+```bash
+# list all configured services
+docker compose config --services
+
+# long-running services should be healthy/up
+docker compose ps
+
+# one-shot services (ingestion, debezium-init, minio-init) should show Exited (0)
+docker compose ps -a
+```
+
+---
+
 ### Task 6 Deliverables Checklist
 
 - [x] `docker-compose.yml` — healthchecks on `kafka` and `spark-master`
@@ -641,5 +671,7 @@ kafka ──healthy──► spark-master ──healthy──► spark-worker �
 - [x] `scripts/cleanup.py` — safe teardown with confirmation
 - [x] `scripts/requirements.txt` — host-side dependencies for ops scripts
 - [x] `app/validate_consistency.py` — end-to-end pipeline validation (DB / Kafka / MinIO)
-- [ ] `DEPLOYMENT_GUIDE.md` — operations guide with troubleshooting
-- [ ] `QUICKSTART.md` — quick reference
+- [x] `DEPLOYMENT_GUIDE.md` — operations guide with troubleshooting
+- [x] `QUICKSTART.md` — quick reference
+- [x] `README.md` — project overview, pipeline diagram, repo structure
+- [x] `IMPLEMENTATION_SUMMARY.md` — task-by-task implementation reference

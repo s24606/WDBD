@@ -160,7 +160,8 @@ def check_minio():
         counts[table] = rows
 
     if missing:
-        return result(False, f"silver layer incomplete for: {', '.join(missing)}")
+        return result(False, f"silver layer incomplete for: {', '.join(missing)}"
+                      " — spark-app may still be initialising (JAR download + first batch ~3 min); re-run this check")
     summary = ", ".join(f"{t}={counts[t]}" for t in ("patients", "appointments", "lab_results"))
     return result(True, f"rows — {summary}")
 
