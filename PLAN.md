@@ -543,7 +543,7 @@ docker compose down -v
 
 ### What to add
 
-Task 6 covers four areas identified from the project requirements and reference implementation comparison.
+Task 6 covers five areas of improvements across storage architecture, infrastructure reliability, operational tooling, pipeline validation, and documentation.
 
 ---
 
@@ -565,6 +565,10 @@ Current flat paths (`s3a://hospital/patients`) hold filtered/transformed data th
 ---
 
 ### B — Docker Compose reliability
+
+**Network** — single bridge network `demo-net` so all containers reach each other by service name (`kafka:9092`, `postgres:5432`) regardless of restart order or dynamic IPs.
+
+**Volumes** — four named volumes (`postgres_data`, `kafka_data`, `minio_data`, `spark_output`) so data survives container restarts. Without them every restart wipes the database, Kafka topics and the entire Data Lake.
 
 Healthchecks and proper dependency ordering so services never race-start.
 

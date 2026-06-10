@@ -85,7 +85,7 @@ python scripts/health_check.py
 
 Runs 14 checks: container status, port reachability, PostgreSQL row counts, Kafka topic existence, Schema Registry, Debezium connector status, MinIO liveness, and Delta file presence in MinIO. Exits 0 on pass, 1 on any failure.
 
-### 3. PostgreSQL tables
+### 4. PostgreSQL tables
 
 ```bash
 docker exec -it postgres psql -U postgres -d hospital -c "\dt"
@@ -153,6 +153,44 @@ python app/validate_consistency.py --minio    # MinIO only
 | Silver | `s3a://hospital/silver/{table}` | Filtered and transformed: adults only (patients), completed appointments, abnormal lab results |
 
 Checkpoints are stored at `s3a://hospital/checkpoints/{bronze\|silver}/{table}` and allow Spark to resume from the last committed offset after a restart.
+
+---
+
+## Reliability & Infrastructure
+
+### Docker network
+
+All services share a single bridge network `demo-net`. This means containers reach each other by service name rather than IP address — `kafka:9092`, `postgres:5432`, `minio:9000` — regardless of the order they start or their internal IPs, which change on every restart.
+
+### Docker volumes
+
+Four named volumes ensure data survives container restarts and `docker compose down` without `-v`:
+
+| Volume | Persists |
+|---|---|
+| `postgres_data` | PostgreSQL tables and WAL |
+| `kafka_data` | Kafka topic data and offsets |
+| `minio_data` | Parquet files and `_delta_log` (the entire Data Lake) |
+| `spark_output` | Spark local output |
+
+Running `docker compose down -v` removes all volumes — use only for a full reset.
+
+### Failure handling
+
+**Automatic restart** — all long-running services (`postgres`, `kafka`, `debezium`, `schema-registry`, `kafka-ui`, `minio`, `spark-master`, `spark-worker`, `spark-app`) have `restart: on-failure`. If a container crashes, Docker restarts it automatically without manual intervention.
+
+**Healthcheck-based startup ordering** — services wait for their dependencies to be truly ready before starting, not just running:
+
+```
+postgres  ──healthy──► ingestion  ──completed──► debezium-init
+kafka     ──healthy──► debezium   ──healthy──────────────────► spark-app
+minio     ──healthy──► minio-init ──completed──────────────────────┘
+kafka     ──healthy──► spark-master ──healthy──► spark-worker ──► spark-app
+```
+
+This eliminates race conditions where e.g. Debezium would try to connect to Kafka before Kafka finished initialising.
+
+**Spark checkpoints** — after each 15-second micro-batch, Spark writes the current Kafka offset to `s3a://hospital/checkpoints/{layer}/{table}`. If `spark-app` restarts, it reads this offset and resumes exactly where it left off — no messages are skipped or processed twice. This is the exactly-once guarantee for the Delta Lake output.
 
 ---
 
