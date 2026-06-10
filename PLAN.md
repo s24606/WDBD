@@ -441,9 +441,12 @@ All three `writeStream` sinks changed from `format("console")` → `format("delt
 
 | Query | Output path | Checkpoint |
 |---|---|---|
-| `patients_adults` | `s3a://hospital/patients` | `s3a://hospital/checkpoints/patients` |
-| `appointments_completed` | `s3a://hospital/appointments` | `s3a://hospital/checkpoints/appointments` |
-| `lab_results_abnormal` | `s3a://hospital/lab_results` | `s3a://hospital/checkpoints/lab_results` |
+| `bronze_patients` | `s3a://hospital/bronze/patients` | `s3a://hospital/checkpoints/bronze/patients` |
+| `bronze_appointments` | `s3a://hospital/bronze/appointments` | `s3a://hospital/checkpoints/bronze/appointments` |
+| `bronze_lab_results` | `s3a://hospital/bronze/lab_results` | `s3a://hospital/checkpoints/bronze/lab_results` |
+| `patients_adults` | `s3a://hospital/silver/patients` | `s3a://hospital/checkpoints/silver/patients` |
+| `appointments_completed` | `s3a://hospital/silver/appointments` | `s3a://hospital/checkpoints/silver/appointments` |
+| `lab_results_abnormal` | `s3a://hospital/silver/lab_results` | `s3a://hospital/checkpoints/silver/lab_results` |
 
 ### Running Task 5
 
@@ -455,21 +458,26 @@ Wait ~60 s for the pipeline to complete one or two micro-batches, then verify:
 
 **Option A — MinIO console (browser)**
 Open `http://localhost:9001` → log in with `minioadmin / minioadmin` → browse `hospital/` bucket.
-Expected folders: `patients/`, `appointments/`, `lab_results/`, `checkpoints/`.
-Each data folder contains `.parquet` files + a `_delta_log/` directory with JSON transaction logs.
+Expected folders: `bronze/` and `silver/`, each containing `patients/`, `appointments/`, `lab_results/`.
+Each table folder contains `.snappy.parquet` files + a `_delta_log/` directory with JSON transaction logs.
+Silver files will be smaller than bronze (filtered data).
 
 **Option B — Spark logs**
 ```bash
 docker logs -f spark-app
 ```
-No `StreamingQueryException` errors; queries `patients_adults`, `appointments_completed`, `lab_results_abnormal` all show `numOutputRows` > 0 in the first batch.
+Signs of a healthy run:
+- 6x `ResolveWriteToStream` warnings at startup — all 6 streaming queries initialised
+- `ProcessingTimeExecutor: Current batch is falling behind` — first batch ran (normal on initial snapshot load)
+- No `StreamingQueryException` — no write failures to MinIO
 
-**Option C — MinIO CLI from host**
+Note: streaming progress metrics (`numOutputRows`) are not printed at the default log level. Use Option C to confirm data landed.
+
+**Option C — MinIO CLI**
 ```bash
-# install mc client first, or exec into minio-init container
-docker run --rm --network wdbd_demo-net minio/mc:latest \
-  sh -c "mc alias set local http://minio:9000 minioadmin minioadmin && mc ls -r local/hospital"
+docker run --rm --network wdbd_demo-net --entrypoint /bin/sh minio/mc -c "mc alias set local http://minio:9000 minioadmin minioadmin && mc ls -r local/hospital/"
 ```
+Expected output: `.snappy.parquet` and `_delta_log/` entries under both `bronze/` and `silver/` for all three tables.
 
 ```bash
 # clean reset
